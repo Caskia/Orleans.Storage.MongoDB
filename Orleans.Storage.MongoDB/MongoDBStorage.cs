@@ -7,10 +7,11 @@ using MongoDB.Driver;
 using Newtonsoft.Json;
 using Orleans.Providers;
 using Orleans.Runtime;
+
 using MongoDBBson = MongoDB.Bson;
+
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-
 
 namespace Orleans.Storage.MongoDB
 {
@@ -19,12 +20,12 @@ namespace Orleans.Storage.MongoDB
     /// </summary>
     /// <remarks>
     /// The storage provider should be included in a deployment by adding this line to the Orleans server configuration file:
-    /// 
+    ///
     ///      <Provider Type="Orleans.Storage.MongoDB.MongoDBStorage" Name="MongoDBStore" Database="db-name" ConnectionString="mongodb://YOURHOSTNAME:27017/" />
     /// and this line to any grain that uses it:
-    /// 
+    ///
     ///     [StorageProvider(ProviderName = "MongoDBStore")]
-    /// 
+    ///
     /// The name 'MongoDBStore' is an arbitrary choice.
     /// </remarks>
     public class MongoDBStorage : IStorageProvider
@@ -34,15 +35,6 @@ namespace Orleans.Storage.MongoDB
         private const string DELETE_ON_CLEAR_PROPERTY = "DeleteStateOnClear";
         private const string USE_GUID_AS_STORAGE_KEY = "UseGuidAsStorageKey";
         private const string USE_ONE_COLLECTION = "UseOneCollection";
-
-        /// <summary>
-        /// Logger object
-        /// </summary>
-        public Logger Log { get; protected set; }
-        /// <summary>
-        /// Database name
-        /// </summary>
-        public string Name { get; set; }
 
         /// <summary>
         /// Database connection string
@@ -55,10 +47,50 @@ namespace Orleans.Storage.MongoDB
         public string Database { get; set; }
 
         /// <summary>
+        /// Logger object
+        /// </summary>
+        public Logger Log { get; protected set; }
+
+        /// <summary>
+        /// Database name
+        /// </summary>
+        public string Name { get; set; }
+
+        /// <summary>
         /// use grain's guid key as the storage key,default is true
         /// <remarks>default is true,use guid as the storeage key, else false use like GrainReference=40011c8c7bcc4141b3569464533a06a203ffffff9c20d2b7 as the key </remarks>
         /// </summary>
         public bool UseGuidAsStorageKey { get; protected set; }
+
+        private GrainStateMongoDataManager DataManager { get; set; }
+
+        /// <summary>
+        /// Removes grain state from its backing store, if found.
+        /// </summary>
+        /// <param name="grainType">A string holding the name of the grain class.</param>
+        /// <param name="grainReference">Represents the long-lived identity of the grain.</param>
+        /// <param name="grainState">An object holding the persisted state of the grain.</param>
+        /// <returns></returns>
+        public Task ClearStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
+        {
+            if (DataManager == null) throw new ArgumentException("DataManager property not initialized");
+
+            string extendKey;
+
+            var key = this.UseGuidAsStorageKey ? grainReference.GetPrimaryKey(out extendKey).ToString() : grainReference.ToKeyString();
+
+            return DataManager.DeleteAsync(grainType, key);
+        }
+
+        /// <summary>
+        /// Closes the storage provider during silo shutdown.
+        /// </summary>
+        /// <returns>Completion promise for this operation.</returns>
+        public Task Close()
+        {
+            DataManager = null;
+            return TaskDone.Done;
+        }
 
         /// <summary>
         /// Initializes the storage provider.
@@ -90,17 +122,7 @@ namespace Orleans.Storage.MongoDB
 
             return TaskDone.Done;
         }
-        private GrainStateMongoDataManager DataManager { get; set; }
-        /// <summary>
-        /// Closes the storage provider during silo shutdown.
-        /// </summary>
-        /// <returns>Completion promise for this operation.</returns>
-        public Task Close()
-        {
-            DataManager = null;
-            return TaskDone.Done;
-        }
-        
+
         /// <summary>
         /// Reads persisted state from the backing store and deserializes it into the the target
         /// grain state object.
@@ -109,7 +131,7 @@ namespace Orleans.Storage.MongoDB
         /// <param name="grainReference">Represents the long-lived identity of the grain.</param>
         /// <param name="grainState">A reference to an object to hold the persisted state of the grain.</param>
         /// <returns>Completion promise for this operation.</returns>
-        public async Task ReadStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        public async Task ReadStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
             if (DataManager == null) throw new ArgumentException("DataManager property not initialized");
 
@@ -132,7 +154,7 @@ namespace Orleans.Storage.MongoDB
         /// <param name="grainReference">Represents the long-lived identity of the grain.</param>
         /// <param name="grainState">A reference to an object holding the persisted state of the grain.</param>
         /// <returns>Completion promise for this operation.</returns>
-        public Task WriteStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
+        public Task WriteStateAsync(string grainType, GrainReference grainReference, IGrainState grainState)
         {
             if (DataManager == null) throw new ArgumentException("DataManager property not initialized");
 
@@ -144,33 +166,13 @@ namespace Orleans.Storage.MongoDB
         }
 
         /// <summary>
-        /// Removes grain state from its backing store, if found.
-        /// </summary>
-        /// <param name="grainType">A string holding the name of the grain class.</param>
-        /// <param name="grainReference">Represents the long-lived identity of the grain.</param>
-        /// <param name="grainState">An object holding the persisted state of the grain.</param>
-        /// <returns></returns>
-        public Task ClearStateAsync(string grainType, GrainReference grainReference, GrainState grainState)
-        {
-            if (DataManager == null) throw new ArgumentException("DataManager property not initialized");
-
-            string extendKey;
-
-            var key = this.UseGuidAsStorageKey ? grainReference.GetPrimaryKey(out extendKey).ToString() : grainReference.ToKeyString();
-
-            return DataManager.DeleteAsync(grainType, key);
-        }
-
-        /// <summary>
         /// Constructs a grain state instance by deserializing a JSON document.
         /// </summary>
         /// <param name="grainState">Grain state to be populated for storage.</param>
         /// <param name="entityData">JSON storage format representaiton of the grain state.</param>
-        protected static void ConvertFromStorageFormat(GrainState grainState, string entityData)
+        protected static void ConvertFromStorageFormat(IGrainState grainState, string entityData)
         {
-            object data = JsonConvert.DeserializeObject(entityData, grainState.GetType(), GrainStateMongoDataManager.JsonSetting);
-            var dict = ((GrainState)data).AsDictionary();
-            grainState.SetAll(dict);
+            grainState.State = JsonConvert.DeserializeObject(entityData, grainState.State.GetType(), GrainStateMongoDataManager.JsonSetting);
         }
     }
 
@@ -179,13 +181,15 @@ namespace Orleans.Storage.MongoDB
     /// </summary>
     internal class GrainStateMongoDataManager
     {
-        private static ConcurrentDictionary<string, bool> registerIndexMap = new ConcurrentDictionary<string, bool>();
-
         public static JsonSerializerSettings JsonSetting = new JsonSerializerSettings()
         {
             NullValueHandling = NullValueHandling.Ignore,
             Converters = new List<JsonConverter>() { new UnixDateTimeConverter() }
         };
+
+        private static ConcurrentDictionary<string, bool> registerIndexMap = new ConcurrentDictionary<string, bool>();
+        private readonly IMongoDatabase _database;
+
         /// <summary>
         /// Constructor
         /// </summary>
@@ -250,7 +254,7 @@ namespace Orleans.Storage.MongoDB
         /// <param name="key">The grain id string.</param>
         /// <param name="entityData">The grain state data to be stored./</param>
         /// <returns>Completion promise for this operation.</returns>
-        public async Task WriteAsync(string collectionName, string key, GrainState entityData)
+        public async Task WriteAsync(string collectionName, string key, IGrainState entityData)
         {
             var collection = await GetCollection(collectionName);
 
@@ -269,7 +273,6 @@ namespace Orleans.Storage.MongoDB
                 {
                     doc["_id"] = existing["_id"];
                     await collection.ReplaceOneAsync(query, doc);
-
                 }
                 else
                 {
@@ -298,7 +301,5 @@ namespace Orleans.Storage.MongoDB
             }
             return collection;
         }
-
-        private readonly IMongoDatabase _database;
     }
 }
