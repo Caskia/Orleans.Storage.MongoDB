@@ -172,7 +172,10 @@ namespace Orleans.Storage.MongoDB
         /// <param name="entityData">JSON storage format representaiton of the grain state.</param>
         protected static void ConvertFromStorageFormat(IGrainState grainState, string entityData)
         {
-            grainState.State = JsonConvert.DeserializeObject(entityData, grainState.State.GetType(), GrainStateMongoDataManager.JsonSetting);
+            var doc = BsonSerializer.Deserialize<BsonDocument>(entityData);
+            var grainData = doc["State"];
+            grainState.State = JsonConvert.DeserializeObject(grainData.ToJson(), grainState.State.GetType(), GrainStateMongoDataManager.JsonSetting);
+            //grainState.State = JsonConvert.DeserializeObject(entityData, grainState.State.GetType(), GrainStateMongoDataManager.JsonSetting);
         }
     }
 
